@@ -1,106 +1,133 @@
-# Convert your wired Keyboard --> Wireless using ESP32-S3
+# ESP32-S3 Wireless KVM
 
-## In this project i have shown how you can convert any wire keyboard into wireless using the esp32 s3.
+A high-performance firmware that turns an **ESP32-S3** into a 4-Slot Wireless
+KVM Switch.
 
-## What This Does
-
-```
-┌──────────────┐     USB-C OTG     ┌────────────┐     Bluetooth     ┌──────────────┐
-│ USB Keyboard │ ◄──────────────►  │  ESP32-S3  │ ◄───────────────► │  PC / Phone  │
-└──────────────┘                   └────────────┘                   └──────────────┘
-```
-
-![WhatsApp Image 2026-01-10 at 8 26 04 PM](https://github.com/user-attachments/assets/3bad7aa6-a436-4116-8579-6e609e32ee42)
-
-## Schematic
-
-<img width="1905" height="879" alt="Screenshot 2026-01-20 180134" src="https://github.com/user-attachments/assets/4cb172be-c85d-485e-af4d-c0b74125427a" />
+Plug your wired mechanical keyboard into the ESP32, and it becomes a Bluetooth
+keyboard that can toggle between 4 devices (Mac, Windows, Linux, Android)
+instantly using hotkeys.
 
 ## Features
 
-- **Native USB Host** - Uses ESP32-S3's hardware USB-OTG (no software emulation)
-- **Multi-Device Support** - Switch between 3 paired devices with a key combo
-- **Low Latency** - Direct HID report forwarding
-- **Universal Compatibility** - Works with Windows, macOS, Linux, iOS, Android, Smart TVs
+- **4 Device Slots:** Switch between Laptop, PC, Tablet, and Phone instantly.
+- **Gaming-Grade Latency:** ~7.5ms latency mode for high-performance input.
+- **Cross-Platform:**
+  - **MacOS:** Fixed reconnect issues & ghosting.
+  - **Linux:** Aggressive advertising to wake up `BlueZ` stack.
+  - **Android:** Identity Key Exchange (IRK) to handle Random Mac Addresses.
+- **Security Gatekeeper:** Rejects unauthorized connection attempts unless in
+  "Pairing Mode".
+- **Power Saving:**
+  - **Eco Mode:** Auto-lowers polling rate after 10s idle.
+  - **Deep Sleep:** Auto-shutdown after 20 mins idle (saves power bank).
+- **Factory Reset:** Built-in hotkey to wipe all security bonds.
 
-## USB Keyboard Power
+## Hardware Required
 
-**The USB-C port on most ESP32-S3 boards does NOT output 5V!**
+1.  **ESP32-S3 Development Board** (Must be S3 version for USB Host support).
+2.  **USB OTG Adapter** (USB-C to USB-A Female).
+3.  **Wired USB Keyboard** (Standard HID).
+4.  **Power Source** (Power bank or LiPo battery).
 
-**Even if you power the ESP32-S3 from the 5V pin, that power is NOT routed to the USB-C VBUS line.**
+**Wiring:**
 
-## Making
+- Plug the USB OTG adapter into the ESP32's **USB_OTG** port (usually the
+  right-side port).
+- Plug your keyboard into the adapter.
+- Power the ESP32 via the **UART/COM** port or battery pins.
 
-#### Option 1: External Power to Keyboard (This is what I did, best for making it portable 💯)
+## Usage Guide
 
-Power the keyboard from external 5V into keyboard's + - and connect the same 5v/gnd and the D + - to the otg's (+ - D+ D-) wires 
-and insert the typc-C port in the esp32 s3's usb/otg port.
+### 1. LED Status Colors
 
+| Color            | Status                                    |
+| :--------------- | :---------------------------------------- |
+| **Solid**        | Connected & Active                        |
+| **Triple Blink** | Reconnect Mode (Looking for known device) |
+| **Slow Breathe** | Pairing Mode (Visible to new devices)     |
+| **Off**          | Deep Sleep / Power Off                    |
+
+- 🔴 **Red:** Slot 1
+- 🟢 **Green:** Slot 2
+- 🔵 **Blue:** Slot 3
+- 🟡 **Yellow:** Slot 4
+
+### 2. Hotkeys (The "Magic" Combo)
+
+All commands use the **Insert** key.
+
+| Action              | Combination                    | Description                                                |
+| :------------------ | :----------------------------- | :--------------------------------------------------------- |
+| **Switch Device**   | `Insert` + `1/2/3/4`           | Switches to slot. Attempts to reconnect to _saved_ device. |
+| **Pair NEW Device** | `Shift` + `Insert` + `1/2/3/4` | Switches to slot & forces **Pairing Mode** (Breathe).      |
+| **Factory Reset**   | `Shift` + `Insert` + `0`       | **Warning:** Wipes all pairings and reboots board.         |
+
+### 3. Waking Up
+
+If the device enters **Deep Sleep** (LEDs off, keyboard dead), you must press
+the **BOOT Button** on the ESP32 to wake it up.
+
+---
+
+## Configuration & Customization
+
+All settings are defined at the top of `src/main.cpp`.
+
+### 1. Changing LED Colors
+
+Find the `slotColors` array. These are standard Hex Color Codes (`0xRRGGBB`).
+
+```cpp
+// Red, Green, Blue, Yellow, Purple (Example)
+uint32_t slotColors[4] = {0xFF0000, 0x00FF00, 0x0000FF, 0xFFFF00};
+
+2. Changing Hotkeys
+
+If your keyboard doesn't have an Insert key, change KEY_INSERT to another usage ID (e.g., 0x48 for Pause/Break, or 0x39 for CapsLock).
+C++
+
+// Key Codes (USB HID Usage IDs)
+#define KEY_INSERT      0x49 // Current: Insert
+#define KEY_1           0x1E // '1' key
+
+Ref: USB HID Usage Tables (Page 53)
+3. Power Management Timers
+
+Adjust how quickly the device sleeps to save battery.
+C++
+
+#define IDLE_TIME_ECO_MS      10000   // 10 Seconds -> Low Power Mode
+#define IDLE_TIME_SLEEP_MS    1200000 // 20 Minutes -> Deep Sleep
+
+ Installation
+
+    Clone this repo.
+
+    Open in VS Code with PlatformIO extension installed.
+
+    Connect ESP32 via UART port.
+
+    Run "Upload".
+
+ Troubleshooting
+
+    Linux won't auto-connect:
+
+        Ensure you have Paired AND Trusted the device in bluetoothctl.
+
+        The firmware uses aggressive 20ms advertising, so it should appear instantly.
+
+    Android asks to pair repeatedly:
+
+        This is fixed in v2.0 by enabling BLE_SM_PAIR_KEY_DIST_ID. Ensure you are using the latest code.
+
+        If stuck, do a Factory Reset (Shift+Ins+0) and forget the device on Android.
+
+    Keyboard lights are off:
+
+        The ESP32 might be in Deep Sleep. Press the BOOT button on the board.
+
+ License
+
+MIT License - Feel free to modify and use!
 ```
-                      ┌──────────────┐
-  (EXTERNAL)  5V ─────┤   USB OTG    ├──── + USB Keyboard
-              GND ────┤USB A to USB C|──── - USB Keyboard
-                      └──────┬───────┘
-                             │ D+/D- and 5V/gnd (We have to give 5V into the usb port too, then the esp32 s3 will identify it as a device)
-                      ┌──────┴───────┐
-                      │   ESP32-S3   │
-                      │USB-C OTG port│
-                      └──────────────┘
-```
-
-#### Option 2: Powered USB Hub 
-
-Use a powered USB hub between ESP32-S3 and keyboard:
-
-```
-ESP32-S3 USB-C ──► [Powered USB Hub] ──► USB Keyboard
-                         ▲
-                    External 5V
-```
-
-## Software Part
-
-```bash
-Make a folder and open it in vs code
-
-Do this in the terminal:- git clone https://github.com/surajmaru/BLE-Keyboard-Conversion-ESP32-S3
-
-Go into that folder
-
-# Download and setup PlatformIO (VS Code Extension)
-
-# IMPORTANT!!:-
-You have to make changes in the "platformio.ini" file depending on your esp32s3 model,
-mine is ESP32-S3 WROOM N8R8 so if this is your chip than you dont have to make any changes in the code
-and if you have some other than you have to update according to your model otherwise it wont work.
-
-# Then connect the s3 to PC and run this:-
-pio run
-
-# Upload to ESP32-S3
-pio run -t upload
-```
-
-## Multi-Device Switching
-
-You can pair with up to **3 different devices** (e.g., PC, Laptop, Tablet) and switch between them using your keyboard.
-
-|      Key Combo      |      Action        |    Device Name   |
-|---------------------|--------------------|------------------|
-| **Scroll Lock + 1** | Switch to Device 1 | `BLE-Keyboard 1` |
-| **Scroll Lock + 2** | Switch to Device 2 | `BLE-Keyboard 2` |
-| **Scroll Lock + 3** | Switch to Device 3 | `BLE-Keyboard 3` |
-
-**How it works:**
-1. Press `Scroll Lock + 1`. Pair "USB-BLE Dev 1" with your first computer.
-2. Press `Scroll Lock + 2`. The connection drops. Pair "USB-BLE Dev 2" with your second device.
-3. Switch back and forth instantly using the key combos!
-4. The active slot is **saved** and restored on reboot.
-5. The **LED** on GPIO 2 blinks to indicate the current slot (1, 2, or 3 blinks).
-
-
-## Conclusion
-
-Now just plug the keyboard into the OTG and power the esp32 and then just connect it to your preferred device and enjoy!
-
-
