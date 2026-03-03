@@ -1,133 +1,86 @@
-# ESP32-S3 Wireless KVM
+# ESP32-S3 USB Keyboard to BLE (4-Slot)
 
-A high-performance firmware that turns an **ESP32-S3** into a 4-Slot Wireless
-KVM Switch.
+Firmware that turns an **ESP32-S3** into a Bluetooth keyboard bridge:
+plug in a wired USB keyboard, then switch it between 4 BLE slots using hotkeys.
 
-Plug your wired mechanical keyboard into the ESP32, and it becomes a Bluetooth
-keyboard that can toggle between 4 devices (Mac, Windows, Linux, Android)
-instantly using hotkeys.
+## Latest Changes
+
+- LED type updated to **SK6812 GRBW** (`NEO_GRBW`) with explicit white-channel control.
+- Slot colors updated to custom Catppuccin-style colors:
+  - Slot 1: `0x04A5E5` (Blue)
+  - Slot 2: `0xFE640B` (Orange)
+  - Slot 3: `0xD20F39` (Red)
+  - Slot 4: `0x40A02B` (Green)
+- Added **Consumer Control (media keys / volume)** HID report (Report ID 2).
+- BLE device name is now slot-specific (`ESP-Slot-1` ... `ESP-Slot-4`).
+- Slot identity MAC suffix now uses `0x40 + slot`.
+- Power management behavior simplified:
+  - Eco mode changes LED state after idle.
+  - Deep sleep after `IDLE_TIME_SLEEP_MS` (default 20 minutes).
 
 ## Features
 
-- **4 Device Slots:** Switch between Laptop, PC, Tablet, and Phone instantly.
-- **Gaming-Grade Latency:** ~7.5ms latency mode for high-performance input.
-- **Cross-Platform:**
-  - **MacOS:** Fixed reconnect issues & ghosting.
-  - **Linux:** Aggressive advertising to wake up `BlueZ` stack.
-  - **Android:** Identity Key Exchange (IRK) to handle Random Mac Addresses.
-- **Security Gatekeeper:** Rejects unauthorized connection attempts unless in
-  "Pairing Mode".
-- **Power Saving:**
-  - **Eco Mode:** Auto-lowers polling rate after 10s idle.
-  - **Deep Sleep:** Auto-shutdown after 20 mins idle (saves power bank).
-- **Factory Reset:** Built-in hotkey to wipe all security bonds.
+- 4 switchable BLE slots.
+- Pairing mode per slot (`Shift + Insert + [1-4]`).
+- Reconnect mode per slot (`Insert + [1-4]`).
+- Factory reset (`Shift + Insert + 0`) clears bonds and restarts.
+- Deep sleep wake on **BOOT** button (GPIO0 low).
+- Supports standard keyboard reports and media/consumer reports.
 
-## Hardware Required
+## Hardware
 
-1.  **ESP32-S3 Development Board** (Must be S3 version for USB Host support).
-2.  **USB OTG Adapter** (USB-C to USB-A Female).
-3.  **Wired USB Keyboard** (Standard HID).
-4.  **Power Source** (Power bank or LiPo battery).
+1. ESP32-S3 dev board (USB host capable).
+2. USB OTG adapter (USB-C to USB-A female).
+3. Wired USB keyboard.
+4. Power source (USB/battery).
+5. 1x addressable LED on GPIO48 (current code targets SK6812 GRBW).
 
-**Wiring:**
+## LED Behavior
 
-- Plug the USB OTG adapter into the ESP32's **USB_OTG** port (usually the
-  right-side port).
-- Plug your keyboard into the adapter.
-- Power the ESP32 via the **UART/COM** port or battery pins.
+### Slot Colors
 
-## Usage Guide
+- Slot 1: Blue `0x04A5E5`
+- Slot 2: Orange `0xFE640B`
+- Slot 3: Red `0xD20F39`
+- Slot 4: Green `0x40A02B`
 
-### 1. LED Status Colors
+### State Patterns
 
-| Color            | Status                                    |
-| :--------------- | :---------------------------------------- |
-| **Solid**        | Connected & Active                        |
-| **Triple Blink** | Reconnect Mode (Looking for known device) |
-| **Slow Breathe** | Pairing Mode (Visible to new devices)     |
-| **Off**          | Deep Sleep / Power Off                    |
+- **Connected:** solid slot color.
+- **Pairing mode:** breathing slot color.
+- **Reconnect mode:** triple-blink slot color.
+- **Deep sleep:** LED off.
 
-- 🔴 **Red:** Slot 1
-- 🟢 **Green:** Slot 2
-- 🔵 **Blue:** Slot 3
-- 🟡 **Yellow:** Slot 4
-
-### 2. Hotkeys (The "Magic" Combo)
+## Hotkeys
 
 All commands use the **Insert** key.
 
-| Action              | Combination                    | Description                                                |
-| :------------------ | :----------------------------- | :--------------------------------------------------------- |
-| **Switch Device**   | `Insert` + `1/2/3/4`           | Switches to slot. Attempts to reconnect to _saved_ device. |
-| **Pair NEW Device** | `Shift` + `Insert` + `1/2/3/4` | Switches to slot & forces **Pairing Mode** (Breathe).      |
-| **Factory Reset**   | `Shift` + `Insert` + `0`       | **Warning:** Wipes all pairings and reboots board.         |
+| Action | Combo |
+| :-- | :-- |
+| Switch to slot 1-4 (reconnect mode) | `Insert + 1/2/3/4` |
+| Switch to slot 1-4 (pairing mode) | `Shift + Insert + 1/2/3/4` |
+| Factory reset | `Shift + Insert + 0` |
 
-### 3. Waking Up
+## Configuration
 
-If the device enters **Deep Sleep** (LEDs off, keyboard dead), you must press
-the **BOOT Button** on the ESP32 to wake it up.
+Main config lives in `src/main.cpp`:
 
----
+- Brightness: `LED_BRIGHTNESS`
+- Idle timers: `IDLE_TIME_ECO_MS`, `IDLE_TIME_SLEEP_MS`
+- Slot colors: `slotColors[4]`
+- Hotkeys: `KEY_INSERT`, `KEY_1..KEY_4`, `KEY_0`
 
-## Configuration & Customization
+## Build / Flash
 
-All settings are defined at the top of `src/main.cpp`.
+1. Open project in VS Code with PlatformIO.
+2. Connect ESP32-S3 via USB.
+3. Run PlatformIO Upload.
 
-### 1. Changing LED Colors
+## Notes
 
-Find the `slotColors` array. These are standard Hex Color Codes (`0xRRGGBB`).
+- On deep sleep, press the board **BOOT** button to wake.
+- If pairing issues occur, run factory reset and remove old bonds on the host.
 
-```cpp
-// Red, Green, Blue, Yellow, Purple (Example)
-uint32_t slotColors[4] = {0xFF0000, 0x00FF00, 0x0000FF, 0xFFFF00};
+## License
 
-2. Changing Hotkeys
-
-If your keyboard doesn't have an Insert key, change KEY_INSERT to another usage ID (e.g., 0x48 for Pause/Break, or 0x39 for CapsLock).
-C++
-
-// Key Codes (USB HID Usage IDs)
-#define KEY_INSERT      0x49 // Current: Insert
-#define KEY_1           0x1E // '1' key
-
-Ref: USB HID Usage Tables (Page 53)
-3. Power Management Timers
-
-Adjust how quickly the device sleeps to save battery.
-C++
-
-#define IDLE_TIME_ECO_MS      10000   // 10 Seconds -> Low Power Mode
-#define IDLE_TIME_SLEEP_MS    1200000 // 20 Minutes -> Deep Sleep
-
- Installation
-
-    Clone this repo.
-
-    Open in VS Code with PlatformIO extension installed.
-
-    Connect ESP32 via UART port.
-
-    Run "Upload".
-
- Troubleshooting
-
-    Linux won't auto-connect:
-
-        Ensure you have Paired AND Trusted the device in bluetoothctl.
-
-        The firmware uses aggressive 20ms advertising, so it should appear instantly.
-
-    Android asks to pair repeatedly:
-
-        This is fixed in v2.0 by enabling BLE_SM_PAIR_KEY_DIST_ID. Ensure you are using the latest code.
-
-        If stuck, do a Factory Reset (Shift+Ins+0) and forget the device on Android.
-
-    Keyboard lights are off:
-
-        The ESP32 might be in Deep Sleep. Press the BOOT button on the board.
-
- License
-
-MIT License - Feel free to modify and use!
-```
+MIT
