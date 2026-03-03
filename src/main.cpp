@@ -24,6 +24,11 @@
 #define IDLE_TIME_ECO_MS 10000
 #define IDLE_TIME_SLEEP_MS 1800000
 
+// Button controls
+#define BOOT_BUTTON_PIN 0
+#define BOOT_SHORT_PRESS_MS 60
+#define BOOT_LONG_PRESS_MS 1500
+
 // Key Codes
 #define KEY_MOD_LSHIFT 0x02
 #define KEY_MOD_RSHIFT 0x20
@@ -102,6 +107,8 @@ void processHID(hid_event_t *evt);
 void handleSlotSwitch(int newSlot, bool pairingMode);
 void handleFactoryReset();
 void checkPowerManagement();
+void handleBootButton();
+void clearBondsAndEnterPairing();
 
 // ================= CALLBACKS =================
 class MySecurityCallbacks : public NimBLESecurityCallbacks {
@@ -302,6 +309,16 @@ void handleFactoryReset() {
   ESP.restart();
 }
 
+void clearBondsAndEnterPairing() {
+  stopBLE();
+  NimBLEDevice::init("");
+  NimBLEDevice::deleteAllBonds();
+  NimBLEDevice::deinit(true);
+  delay(200);
+  appState = STATE_DISCONNECTED_PAIRING;
+  startBLE(currentSlot);
+}
+
 void enterDeepSleep() {
   stopBLE();
   pixels.clear();
@@ -388,6 +405,43 @@ void checkPowerManagement() {
   }
 }
 
+void handleBootButton() {
+  static bool prevPressed = false;
+  static unsigned long pressedAt = 0;
+  static bool initialized = false;
+  static unsigned long readyAt = 0;
+
+  bool pressed = (digitalRead(BOOT_BUTTON_PIN) == LOW);
+
+  if (!initialized) {
+    initialized = true;
+    readyAt = millis() + 1200;
+    prevPressed = pressed;
+    return;
+  }
+
+  if (millis() < readyAt) {
+    prevPressed = pressed;
+    return;
+  }
+
+  if (pressed && !prevPressed) {
+    pressedAt = millis();
+  }
+
+  if (!pressed && prevPressed) {
+    unsigned long heldMs = millis() - pressedAt;
+    if (heldMs >= BOOT_LONG_PRESS_MS) {
+      clearBondsAndEnterPairing();
+    } else if (heldMs >= BOOT_SHORT_PRESS_MS) {
+      int nextSlot = (currentSlot + 1) % NUM_SLOTS;
+      handleSlotSwitch(nextSlot, false);
+    }
+  }
+
+  prevPressed = pressed;
+}
+
 // ================= TASKS =================
 void usb_lib_task(void *arg) {
   while (1)
@@ -413,8 +467,12 @@ void setup() {
   Serial.begin(115200);
   pixels.begin();
   pixels.setBrightness(LED_BRIGHTNESS);
-  if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT0)
+  pinMode(BOOT_BUTTON_PIN, INPUT_PULLUP);
+
+  if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT0) {
     currentSlot = storedSlot;
+  }
+
   esp_read_mac(baseMac, ESP_MAC_WIFI_STA);
 
   hidQueue = xQueueCreate(20, sizeof(hid_event_t));
@@ -432,6 +490,7 @@ void loop() {
     drainCount++;
   }
 
+  handleBootButton();
   checkPowerManagement();
 
   static unsigned long lastUpdate = 0;

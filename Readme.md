@@ -14,9 +14,15 @@ plug in a wired USB keyboard, then switch it between 4 BLE slots using hotkeys.
 - Added **Consumer Control (media keys / volume)** HID report (Report ID 2).
 - BLE device name is now slot-specific (`ESP-Slot-1` ... `ESP-Slot-4`).
 - Slot identity MAC suffix now uses `0x40 + slot`.
+- Increased NimBLE storage limits to improve Android reconnect stability:
+  - `CONFIG_BT_NIMBLE_MAX_BONDS=8`
+  - `CONFIG_BT_NIMBLE_MAX_CCCDS=32`
 - Power management behavior simplified:
   - Eco mode changes LED state after idle.
   - Deep sleep after `IDLE_TIME_SLEEP_MS` (default 20 minutes).
+- Added **BOOT button actions**:
+  - Short press: switch to next slot.
+  - Long press (~1.5s): clear stored bonds and enter pairing mode on current slot.
 
 ## Features
 
@@ -60,6 +66,12 @@ All commands use the **Insert** key.
 | Switch to slot 1-4 (reconnect mode) | `Insert + 1/2/3/4` |
 | Switch to slot 1-4 (pairing mode) | `Shift + Insert + 1/2/3/4` |
 | Factory reset | `Shift + Insert + 0` |
+
+## Board Button Controls
+
+- `BOOT` short press: switch to next slot in reconnect mode.
+- `BOOT` long press (~1.5s): clear BLE bonds and enter pairing mode on the current slot.
+- `RESET`: hardware reboot only (no runtime action binding).
 
 ## Configuration
 
