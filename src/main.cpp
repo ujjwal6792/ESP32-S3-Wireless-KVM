@@ -10,6 +10,11 @@
 #include <NimBLEHIDDevice.h>
 #include <NimBLEServer.h>
 #include <NimBLEUtils.h>
+#if defined(CONFIG_NIMBLE_CPP_IDF)
+#include "host/ble_hs_id.h"
+#else
+#include "nimble/nimble/host/include/host/ble_hs_id.h"
+#endif
 
 // --- USB Host Dependencies ---
 #include "hid_host.h"
@@ -18,7 +23,7 @@
 // ================= CONFIGURATION =================
 #define NUM_SLOTS 4
 #define LED_PIN 48
-#define LED_BRIGHTNESS 255
+#define LED_BRIGHTNESS 48
 
 // POWER SAVING
 #define IDLE_TIME_ECO_MS 10000
@@ -62,12 +67,14 @@ bool isEcoMode = false;
 // Your Custom Catppuccin Hex Colors
 uint32_t slotColors[4] = {0x04A5E5, 0xFE640B, 0xD20F39, 0x40A02B};
 uint8_t baseMac[6];
+constexpr uint16_t INVALID_CONN_HANDLE = 0xFFFF;
 
 NimBLEServer *pServer = nullptr;
 NimBLEHIDDevice *pHidDev = nullptr;
 NimBLECharacteristic *pInputChar = nullptr;
 NimBLECharacteristic *pConsumerChar = nullptr;
 QueueHandle_t hidQueue = nullptr;
+volatile uint16_t activeConnHandle = INVALID_CONN_HANDLE;
 
 typedef struct {
   uint8_t *rawData;
@@ -109,6 +116,8 @@ void handleFactoryReset();
 void checkPowerManagement();
 void handleBootButton();
 void clearBondsAndEnterPairing();
+void buildSlotBleAddress(int slot, uint8_t out[6]);
+bool configureSlotBleIdentity(int slot);
 
 // ================= CALLBACKS =================
 class MySecurityCallbacks : public NimBLESecurityCallbacks {
@@ -125,6 +134,7 @@ class MySecurityCallbacks : public NimBLESecurityCallbacks {
 
 class MyServerCallbacks : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer *pServer, ble_gap_conn_desc *desc) override {
+    activeConnHandle = desc->conn_handle;
     isConnected = true;
     appState = STATE_CONNECTED;
     updateLED();
@@ -133,6 +143,7 @@ class MyServerCallbacks : public NimBLEServerCallbacks {
   }
 
   void onDisconnect(NimBLEServer *pServer) override {
+    activeConnHandle = INVALID_CONN_HANDLE;
     isConnected = false;
     if (isSwitching)
       return;
@@ -189,6 +200,31 @@ void hid_host_driver_callback(hid_host_device_handle_t hid_device_handle,
 
 // ================= LOGIC =================
 
+void buildSlotBleAddress(int slot, uint8_t out[6]) {
+  memcpy(out, baseMac, sizeof(baseMac));
+
+  // Use a stable static-random address per slot instead of rewriting the ESP
+  // base MAC at runtime, which destabilizes bonding and reconnects.
+  out[0] = (out[0] & 0xF0) | ((slot + 1) * 3);
+  out[5] = (out[5] & 0x3F) | 0xC0;
+}
+
+bool configureSlotBleIdentity(int slot) {
+  uint8_t slotAddress[6];
+  buildSlotBleAddress(slot, slotAddress);
+  NimBLEDevice::setOwnAddrType(BLE_OWN_ADDR_RANDOM);
+
+  int rc = ble_hs_id_set_rnd(slotAddress);
+  if (rc != 0) {
+    Serial.printf("Failed to set BLE address for slot %d, rc=%d\n", slot + 1,
+                  rc);
+    NimBLEDevice::setOwnAddrType(BLE_OWN_ADDR_PUBLIC);
+    return false;
+  }
+
+  return true;
+}
+
 void updateLED() {
   if (appState == STATE_CONNECTED) {
     if (isEcoMode) {
@@ -212,19 +248,15 @@ void startBLE(int slot) {
   isSwitching = false;
   currentSlot = slot;
   storedSlot = slot;
+  activeConnHandle = INVALID_CONN_HANDLE;
 
   char name[20];
-  sprintf(name, "ESP-Slot-%d", slot + 1);
-
-  uint8_t newMac[6];
-  memcpy(newMac, baseMac, 6);
-  newMac[5] = 0x40 + slot;
-  esp_base_mac_addr_set(newMac);
+  snprintf(name, sizeof(name), "ESP-Slot-%d", slot + 1);
 
   NimBLEDevice::init(name);
+  configureSlotBleIdentity(slot);
 
   NimBLEDevice::setPower(ESP_PWR_LVL_P9);
-  NimBLEDevice::setOwnAddrType(BLE_OWN_ADDR_PUBLIC);
   NimBLEDevice::setSecurityAuth(true, false, true);
   NimBLEDevice::setSecurityInitKey(BLE_SM_PAIR_KEY_DIST_ENC |
                                    BLE_SM_PAIR_KEY_DIST_ID);
@@ -265,10 +297,18 @@ void startBLE(int slot) {
 void stopBLE() {
   isSwitching = true;
   if (pServer) {
+    std::vector<uint16_t> peers = pServer->getPeerDevices();
+    for (uint16_t connHandle : peers) {
+      pServer->disconnect(connHandle);
+    }
+
+    if (activeConnHandle != INVALID_CONN_HANDLE && peers.empty()) {
+      pServer->disconnect(activeConnHandle);
+    }
+
     if (pServer->getConnectedCount() > 0) {
-      pServer->disconnect(0);
       unsigned long start = millis();
-      while (isConnected && millis() - start < 500)
+      while (pServer->getConnectedCount() > 0 && millis() - start < 1000)
         delay(10);
     }
     if (pServer->getAdvertising()->isAdvertising())
@@ -277,6 +317,8 @@ void stopBLE() {
     pServer = nullptr;
     pHidDev = nullptr;
     pInputChar = nullptr;
+    pConsumerChar = nullptr;
+    activeConnHandle = INVALID_CONN_HANDLE;
     isConnected = false;
   }
 }
