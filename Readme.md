@@ -12,7 +12,11 @@ plug in a wired USB keyboard, then switch it between 4 BLE slots using hotkeys.
   - Slot 3: `0xD20F39` (Red)
   - Slot 4: `0x40A02B` (Green)
 - Added **Consumer Control (media keys / volume)** HID report (Report ID 2).
-- BLE device name is now slot-specific (`ESP-Slot-1` ... `ESP-Slot-4`).
+- BLE device names now follow fixed slot profiles:
+  - Slot 1: `ESP-Mac`
+  - Slot 2: `ESP-Windows`
+  - Slot 3: `ESP-Linux`
+  - Slot 4: `ESP-Android`
 - Slot identity MAC suffix now uses `0x40 + slot`.
 - Increased NimBLE storage limits to improve Android reconnect stability:
   - `CONFIG_BT_NIMBLE_MAX_BONDS=8`
@@ -65,6 +69,11 @@ All commands use the **Insert** key.
 | :-- | :-- |
 | Switch to slot 1-4 (reconnect mode) | `Insert + 1/2/3/4` |
 | Switch to slot 1-4 (pairing mode) | `Shift + Insert + 1/2/3/4` |
+| Switch to Mac slot | `Insert + M` |
+| Switch to Windows slot | `Insert + W` |
+| Switch to Linux slot | `Insert + L` |
+| Switch to Android slot | `Insert + A` |
+| Pair Mac/Windows/Linux/Android slot | `Shift + Insert + M/W/L/A` |
 | Factory reset | `Shift + Insert + 0` |
 
 ## Board Button Controls

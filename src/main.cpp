@@ -1,9 +1,13 @@
 #include <Adafruit_NeoPixel.h>
 #include <Arduino.h>
+#include <Preferences.h>
+#include <esp_system.h>
 #include <esp_wifi.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include <freertos/task.h>
+
+#include "oled_ssd1306.h"
 
 // --- BLE Dependencies ---
 #include <NimBLEDevice.h>
@@ -23,7 +27,17 @@
 // ================= CONFIGURATION =================
 #define NUM_SLOTS 4
 #define LED_PIN 48
-#define LED_BRIGHTNESS 48
+#define LED_BRIGHTNESS 1
+
+// OLED SSD1306 (I2C)
+// Override at build time via platformio.ini build_flags:
+// -DOLED_SDA_PIN=4 -DOLED_SCL_PIN=5
+#ifndef OLED_SDA_PIN
+#define OLED_SDA_PIN 18
+#endif
+#ifndef OLED_SCL_PIN
+#define OLED_SCL_PIN 10
+#endif
 
 // POWER SAVING
 #define IDLE_TIME_ECO_MS 10000
@@ -31,7 +45,7 @@
 
 // Button controls
 #define BOOT_BUTTON_PIN 0
-#define BOOT_SHORT_PRESS_MS 60
+#define BOOT_SHORT_PRESS_MS 60                                                                                                                                                                                                                                                                                                                                                                                                                                                ````````````````````````````````````````````````````` 
 #define BOOT_LONG_PRESS_MS 1500
 
 // Key Codes
@@ -43,8 +57,14 @@
 #define KEY_3 0x20
 #define KEY_4 0x21
 #define KEY_0 0x27
+#define KEY_A 0x04
+#define KEY_L 0x0F
+#define KEY_M 0x10
+#define KEY_W 0x1A
 
 // ================= GLOBALS =================
+extern "C" int ble_store_config_set_namespace(const char *name);
+
 // ---> FIX: Changed to NEO_GRBW to support your SK6812 4-Channel LED
 Adafruit_NeoPixel pixels(1, LED_PIN, NEO_GRBW + NEO_KHZ800);
 
@@ -60,21 +80,38 @@ volatile ConnectionState appState = STATE_DISCONNECTED_RECONNECTING;
 volatile int currentSlot = 0;
 volatile bool isSwitching = false;
 volatile bool isConnected = false;
+volatile bool ledDirty = true;
 
 unsigned long lastKeyTime = 0;
 bool isEcoMode = false;
-
-// Your Custom Catppuccin Hex Colors
-uint32_t slotColors[4] = {0x04A5E5, 0xFE640B, 0xD20F39, 0x40A02B};
 uint8_t baseMac[6];
 constexpr uint16_t INVALID_CONN_HANDLE = 0xFFFF;
+
+typedef struct {
+  const char *label;
+  const char *shortcut;
+  uint8_t aliasKey;
+  uint32_t color;
+} slot_profile_t;
+
+const slot_profile_t slotProfiles[NUM_SLOTS] = {
+    {"Mac", "Insert+M / Insert+1", KEY_M, 0x04A5E5},
+    {"Windows", "Insert+W / Insert+2", KEY_W, 0xFE640B},
+    {"Linux", "Insert+L / Insert+3", KEY_L, 0xD20F39},
+    {"Android", "Insert+A / Insert+4", KEY_A, 0x40A02B},
+};
 
 NimBLEServer *pServer = nullptr;
 NimBLEHIDDevice *pHidDev = nullptr;
 NimBLECharacteristic *pInputChar = nullptr;
 NimBLECharacteristic *pConsumerChar = nullptr;
+NimBLECharacteristic *pOutputChar = nullptr;
+NimBLECharacteristic *pBootInputChar = nullptr;
+NimBLECharacteristic *pBootOutputChar = nullptr;
 QueueHandle_t hidQueue = nullptr;
 volatile uint16_t activeConnHandle = INVALID_CONN_HANDLE;
+Preferences prefs;
+bool prefsReady = false;
 
 typedef struct {
   uint8_t *rawData;
@@ -110,6 +147,7 @@ const uint8_t hidReportMap[] = {
 void startBLE(int slot);
 void stopBLE();
 void updateLED();
+void markLEDDirty();
 void processHID(hid_event_t *evt);
 void handleSlotSwitch(int newSlot, bool pairingMode);
 void handleFactoryReset();
@@ -118,28 +156,79 @@ void handleBootButton();
 void clearBondsAndEnterPairing();
 void buildSlotBleAddress(int slot, uint8_t out[6]);
 bool configureSlotBleIdentity(int slot);
+const char *appStateName(ConnectionState state);
+const char *resetReasonName(esp_reset_reason_t reason);
+void logConnDesc(const char *prefix, ble_gap_conn_desc *desc);
+int logGapEvent(ble_gap_event *event, void *arg);
+void initSlotStorage();
+void saveCurrentSlot(int slot);
+void logBondSummary(const char *prefix);
+void logSlotProfiles();
+int decodeSlotShortcut(uint8_t keycode);
+void buildSlotName(int slot, char *name, size_t nameLen);
+void buildSlotNamespace(int slot, char *name, size_t nameLen);
+bool configureSlotStorageNamespace(int slot);
+
+class HidCharCallbacks : public NimBLECharacteristicCallbacks {
+  void onRead(NimBLECharacteristic *pCharacteristic,
+              ble_gap_conn_desc *desc) override {
+    Serial.printf("[HID] read uuid=%s handle=%u conn=%u\n",
+                  pCharacteristic->getUUID().toString().c_str(),
+                  pCharacteristic->getHandle(), desc->conn_handle);
+  }
+
+  void onWrite(NimBLECharacteristic *pCharacteristic,
+               ble_gap_conn_desc *desc) override {
+    NimBLEAttValue value = pCharacteristic->getValue();
+    std::string text = value.getValue<std::string>();
+    Serial.printf("[HID] write uuid=%s handle=%u conn=%u len=%u",
+                  pCharacteristic->getUUID().toString().c_str(),
+                  pCharacteristic->getHandle(), desc->conn_handle,
+                  (unsigned)value.size());
+    for (size_t i = 0; i < value.size(); i++) {
+      Serial.printf(" %02X", (uint8_t)text[i]);
+    }
+    Serial.println();
+  }
+};
+
+HidCharCallbacks hidCharCallbacks;
 
 // ================= CALLBACKS =================
 class MySecurityCallbacks : public NimBLESecurityCallbacks {
   bool onConfirmPIN(uint32_t pin) override { return true; }
   bool onSecurityRequest() override { return true; }
   void onAuthenticationComplete(ble_gap_conn_desc *desc) override {
+    logConnDesc("[BLE] auth complete", desc);
+    logBondSummary("[BLE] bonds after auth");
     if (!desc->sec_state.encrypted) {
+      Serial.printf("[BLE] auth failed, disconnecting handle=%u\n",
+                    desc->conn_handle);
       pServer->disconnect(desc->conn_handle);
     }
   }
-  uint32_t onPassKeyRequest() override { return 123456; }
-  void onPassKeyNotify(uint32_t pass_key) override {}
+  uint32_t onPassKeyRequest() override {
+    Serial.println("[BLE] passkey requested");
+    return 123456;
+  }
+  void onPassKeyNotify(uint32_t pass_key) override {
+    Serial.printf("[BLE] passkey notify=%06lu\n", (unsigned long)pass_key);
+  }
 };
 
 class MyServerCallbacks : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer *pServer, ble_gap_conn_desc *desc) override {
+    bool wasPairing = (appState == STATE_DISCONNECTED_PAIRING);
     activeConnHandle = desc->conn_handle;
     isConnected = true;
     appState = STATE_CONNECTED;
-    updateLED();
+    markLEDDirty();
     lastKeyTime = millis();
     isEcoMode = false;
+    logConnDesc("[BLE] connected", desc);
+    int rc = NimBLEDevice::startSecurity(desc->conn_handle);
+    Serial.printf("[BLE] startSecurity handle=%u rc=%d mode=%s\n",
+                  desc->conn_handle, rc, wasPairing ? "pairing" : "reconnect");
   }
 
   void onDisconnect(NimBLEServer *pServer) override {
@@ -150,7 +239,11 @@ class MyServerCallbacks : public NimBLEServerCallbacks {
     if (appState == STATE_CONNECTED)
       appState = STATE_DISCONNECTED_RECONNECTING;
     pServer->getAdvertising()->start();
-    updateLED();
+    markLEDDirty();
+  }
+
+  void onDisconnect(NimBLEServer *pServer, ble_gap_conn_desc *desc) override {
+    logConnDesc("[BLE] disconnected", desc);
   }
 };
 
@@ -200,6 +293,190 @@ void hid_host_driver_callback(hid_host_device_handle_t hid_device_handle,
 
 // ================= LOGIC =================
 
+const char *appStateName(ConnectionState state) {
+  switch (state) {
+  case STATE_DISCONNECTED_RECONNECTING:
+    return "reconnecting";
+  case STATE_DISCONNECTED_PAIRING:
+    return "pairing";
+  case STATE_CONNECTED:
+    return "connected";
+  default:
+    return "unknown";
+  }
+}
+
+const char *resetReasonName(esp_reset_reason_t reason) {
+  switch (reason) {
+  case ESP_RST_POWERON:
+    return "poweron";
+  case ESP_RST_SW:
+    return "software";
+  case ESP_RST_PANIC:
+    return "panic";
+  case ESP_RST_INT_WDT:
+    return "interrupt_wdt";
+  case ESP_RST_TASK_WDT:
+    return "task_wdt";
+  case ESP_RST_WDT:
+    return "other_wdt";
+  case ESP_RST_DEEPSLEEP:
+    return "deepsleep";
+  case ESP_RST_BROWNOUT:
+    return "brownout";
+  case ESP_RST_SDIO:
+    return "sdio";
+  default:
+    return "unknown";
+  }
+}
+
+void logConnDesc(const char *prefix, ble_gap_conn_desc *desc) {
+  NimBLEAddress peerId(desc->peer_id_addr);
+  NimBLEAddress peerOta(desc->peer_ota_addr);
+  Serial.printf(
+      "%s handle=%u peer_id=%s peer_ota=%s encrypted=%d bonded=%d mtu=%u\n",
+      prefix, desc->conn_handle, peerId.toString().c_str(),
+      peerOta.toString().c_str(), desc->sec_state.encrypted,
+      desc->sec_state.bonded, ble_att_mtu(desc->conn_handle));
+}
+
+int logGapEvent(ble_gap_event *event, void *arg) {
+  switch (event->type) {
+  case BLE_GAP_EVENT_CONNECT:
+    Serial.printf("[GAP] connect status=%d handle=%u\n", event->connect.status,
+                  event->connect.conn_handle);
+    break;
+  case BLE_GAP_EVENT_DISCONNECT:
+    Serial.printf("[GAP] disconnect reason=%d handle=%u\n",
+                  event->disconnect.reason, event->disconnect.conn.conn_handle);
+    break;
+  case BLE_GAP_EVENT_CONN_UPDATE:
+    Serial.printf("[GAP] conn_update status=%d handle=%u\n",
+                  event->conn_update.status, event->conn_update.conn_handle);
+    break;
+  case BLE_GAP_EVENT_TERM_FAILURE:
+    Serial.printf("[GAP] term_failure status=%d handle=%u\n",
+                  event->term_failure.status, event->term_failure.conn_handle);
+    break;
+  case BLE_GAP_EVENT_ENC_CHANGE:
+    Serial.printf("[GAP] enc_change status=%d handle=%u\n",
+                  event->enc_change.status, event->enc_change.conn_handle);
+    break;
+  case BLE_GAP_EVENT_PASSKEY_ACTION:
+    Serial.printf("[GAP] passkey_action action=%u handle=%u\n",
+                  event->passkey.params.action, event->passkey.conn_handle);
+    break;
+  case BLE_GAP_EVENT_SUBSCRIBE:
+    Serial.printf(
+        "[GAP] subscribe handle=%u attr=%u notify=%u->%u indicate=%u->%u\n",
+        event->subscribe.conn_handle, event->subscribe.attr_handle,
+        event->subscribe.prev_notify, event->subscribe.cur_notify,
+        event->subscribe.prev_indicate, event->subscribe.cur_indicate);
+    break;
+  case BLE_GAP_EVENT_MTU:
+    Serial.printf("[GAP] mtu handle=%u value=%u\n", event->mtu.conn_handle,
+                  event->mtu.value);
+    break;
+  case BLE_GAP_EVENT_REPEAT_PAIRING:
+    Serial.printf("[GAP] repeat_pairing handle=%u\n",
+                  event->repeat_pairing.conn_handle);
+    break;
+  case BLE_GAP_EVENT_IDENTITY_RESOLVED:
+    Serial.printf("[GAP] identity_resolved handle=%u\n",
+                  event->identity_resolved.conn_handle);
+    break;
+  default:
+    break;
+  }
+
+  return 0;
+}
+
+void markLEDDirty() { ledDirty = true; }
+
+void initSlotStorage() {
+  prefsReady = prefs.begin("blekbd", false);
+  if (!prefsReady) {
+    Serial.println("[SYS] failed to open preferences");
+    return;
+  }
+
+  int savedSlot = prefs.getUChar("slot", storedSlot);
+  if (savedSlot >= 0 && savedSlot < NUM_SLOTS) {
+    currentSlot = savedSlot;
+    storedSlot = savedSlot;
+  }
+}
+
+void saveCurrentSlot(int slot) {
+  if (!prefsReady)
+    return;
+  prefs.putUChar("slot", slot);
+}
+
+int decodeSlotShortcut(uint8_t keycode) {
+  switch (keycode) {
+  case KEY_1:
+    return 0;
+  case KEY_2:
+    return 1;
+  case KEY_3:
+    return 2;
+  case KEY_4:
+    return 3;
+  default:
+    break;
+  }
+
+  for (int i = 0; i < NUM_SLOTS; i++) {
+    if (slotProfiles[i].aliasKey == keycode) {
+      return i;
+    }
+  }
+
+  return -1;
+}
+
+void buildSlotName(int slot, char *name, size_t nameLen) {
+  snprintf(name, nameLen, "ESP-%s", slotProfiles[slot].label);
+}
+
+void logBondSummary(const char *prefix) {
+  int bondCount = NimBLEDevice::getNumBonds();
+  Serial.printf("%s count=%d\n", prefix, bondCount);
+  for (int i = 0; i < bondCount; i++) {
+    NimBLEAddress addr = NimBLEDevice::getBondedAddress(i);
+    Serial.printf("%s[%d]=%s\n", prefix, i, addr.toString().c_str());
+  }
+}
+
+void logSlotProfiles() {
+  for (int i = 0; i < NUM_SLOTS; i++) {
+    Serial.printf("[SLOT] %d label=%s bind=%s\n", i + 1, slotProfiles[i].label,
+                  slotProfiles[i].shortcut);
+  }
+}
+
+void buildSlotNamespace(int slot, char *name, size_t nameLen) {
+  snprintf(name, nameLen, "nimble_s%d", slot + 1);
+}
+
+bool configureSlotStorageNamespace(int slot) {
+  char slotNamespace[16];
+  buildSlotNamespace(slot, slotNamespace, sizeof(slotNamespace));
+
+  int rc = ble_store_config_set_namespace(slotNamespace);
+  if (rc != 0) {
+    Serial.printf("[BLE] failed to set slot namespace=%s rc=%d\n",
+                  slotNamespace, rc);
+    return false;
+  }
+
+  Serial.printf("[BLE] slot %d store=%s\n", slot + 1, slotNamespace);
+  return true;
+}
+
 void buildSlotBleAddress(int slot, uint8_t out[6]) {
   memcpy(out, baseMac, sizeof(baseMac));
 
@@ -212,7 +489,6 @@ void buildSlotBleAddress(int slot, uint8_t out[6]) {
 bool configureSlotBleIdentity(int slot) {
   uint8_t slotAddress[6];
   buildSlotBleAddress(slot, slotAddress);
-  NimBLEDevice::setOwnAddrType(BLE_OWN_ADDR_RANDOM);
 
   int rc = ble_hs_id_set_rnd(slotAddress);
   if (rc != 0) {
@@ -221,6 +497,15 @@ bool configureSlotBleIdentity(int slot) {
     NimBLEDevice::setOwnAddrType(BLE_OWN_ADDR_PUBLIC);
     return false;
   }
+
+  // Android typically reconnects from a resolvable private address. Using an
+  // RPA with a stable random identity lets NimBLE restore bonded reconnects
+  // through the resolving list while keeping each slot as a distinct device.
+  NimBLEDevice::setOwnAddrType(BLE_OWN_ADDR_RPA_RANDOM_DEFAULT);
+
+  NimBLEAddress bleAddress(slotAddress, BLE_ADDR_RANDOM);
+  Serial.printf("[BLE] slot %d addr=%s\n", slot + 1,
+                bleAddress.toString().c_str());
 
   return true;
 }
@@ -232,7 +517,7 @@ void updateLED() {
       pixels.setPixelColor(0, pixels.Color(129, 200, 190, 20));
     } else {
       // Decodes Hex & Forces the blinding White LED to remain OFF
-      uint32_t hex = slotColors[currentSlot];
+      uint32_t hex = slotProfiles[currentSlot].color;
       uint8_t r = (hex >> 16) & 0xFF;
       uint8_t g = (hex >> 8) & 0xFF;
       uint8_t b_val = hex & 0xFF;
@@ -242,18 +527,22 @@ void updateLED() {
     pixels.setPixelColor(0, 0);
   }
   pixels.show();
+  ledDirty = false;
 }
 
 void startBLE(int slot) {
   isSwitching = false;
   currentSlot = slot;
   storedSlot = slot;
+  saveCurrentSlot(slot);
   activeConnHandle = INVALID_CONN_HANDLE;
 
   char name[20];
-  snprintf(name, sizeof(name), "ESP-Slot-%d", slot + 1);
+  buildSlotName(slot, name, sizeof(name));
 
+  configureSlotStorageNamespace(slot);
   NimBLEDevice::init(name);
+  NimBLEDevice::setCustomGapHandler(logGapEvent);
   configureSlotBleIdentity(slot);
 
   NimBLEDevice::setPower(ESP_PWR_LVL_P9);
@@ -266,17 +555,26 @@ void startBLE(int slot) {
   NimBLEDevice::setSecurityCallbacks(new MySecurityCallbacks());
 
   pServer = NimBLEDevice::createServer();
+  pServer->advertiseOnDisconnect(false);
   pServer->setCallbacks(new MyServerCallbacks());
 
   pHidDev = new NimBLEHIDDevice(pServer);
   pHidDev->reportMap((uint8_t *)hidReportMap, sizeof(hidReportMap));
 
   pInputChar = pHidDev->inputReport(1);
+  pOutputChar = pHidDev->outputReport(1);
   pConsumerChar = pHidDev->inputReport(2);
+  pBootInputChar = pHidDev->bootInput();
+  pBootOutputChar = pHidDev->bootOutput();
+  pOutputChar->setCallbacks(&hidCharCallbacks);
+  pBootOutputChar->setCallbacks(&hidCharCallbacks);
+  pHidDev->protocolMode()->setCallbacks(&hidCharCallbacks);
+  pHidDev->hidControl()->setCallbacks(&hidCharCallbacks);
 
   pHidDev->manufacturer()->setValue("ESP-Custom");
   pHidDev->pnp(0x02, 0xe502, 0xa111, 0x0211);
-  pHidDev->hidInfo(0x00, 0x01);
+  pHidDev->hidInfo(0x00, 0x03);
+  pHidDev->setBatteryLevel(100);
 
   NimBLEAdvertising *pAdvertising = pServer->getAdvertising();
   pAdvertising->setAppearance(HID_KEYBOARD);
@@ -292,13 +590,22 @@ void startBLE(int slot) {
   pHidDev->startServices();
   pAdvertising->start();
   lastKeyTime = millis();
+  markLEDDirty();
+  logBondSummary("[BLE] bonds at start");
+  Serial.printf("[BLE] start slot=%d label=%s mode=%s name=%s\n",
+                currentSlot + 1, slotProfiles[currentSlot].label,
+                appStateName((ConnectionState)appState), name);
 }
 
 void stopBLE() {
   isSwitching = true;
+  Serial.printf("[BLE] stop slot=%d connected=%d state=%s\n", currentSlot + 1,
+                isConnected, appStateName((ConnectionState)appState));
   if (pServer) {
     std::vector<uint16_t> peers = pServer->getPeerDevices();
     for (uint16_t connHandle : peers) {
+      Serial.printf("[BLE] disconnecting handle=%u for slot switch/stop\n",
+                    connHandle);
       pServer->disconnect(connHandle);
     }
 
@@ -318,6 +625,9 @@ void stopBLE() {
     pHidDev = nullptr;
     pInputChar = nullptr;
     pConsumerChar = nullptr;
+    pOutputChar = nullptr;
+    pBootInputChar = nullptr;
+    pBootOutputChar = nullptr;
     activeConnHandle = INVALID_CONN_HANDLE;
     isConnected = false;
   }
@@ -327,6 +637,10 @@ void handleSlotSwitch(int newSlot, bool pairingMode) {
   if (newSlot == currentSlot &&
       pairingMode == (appState == STATE_DISCONNECTED_PAIRING))
     return;
+  Serial.printf("[SLOT] switch %d(%s) -> %d(%s) mode=%s\n", currentSlot + 1,
+                slotProfiles[currentSlot].label, newSlot + 1,
+                slotProfiles[newSlot].label,
+                pairingMode ? "pairing" : "reconnect");
   stopBLE();
   delay(600);
   currentSlot = newSlot;
@@ -336,6 +650,7 @@ void handleSlotSwitch(int newSlot, bool pairingMode) {
 }
 
 void handleFactoryReset() {
+  Serial.println("[SYS] factory reset requested");
   stopBLE();
   for (int i = 0; i < 5; i++) {
     // Red visual reset indicator
@@ -346,22 +661,42 @@ void handleFactoryReset() {
     pixels.show();
     delay(100);
   }
-  NimBLEDevice::init("");
-  NimBLEDevice::deleteAllBonds();
+  for (int slot = 0; slot < NUM_SLOTS; slot++) {
+    configureSlotStorageNamespace(slot);
+    NimBLEDevice::init("");
+    NimBLEDevice::deleteAllBonds();
+    NimBLEDevice::deinit(true);
+  }
+  currentSlot = 0;
+  storedSlot = 0;
+  saveCurrentSlot(0);
   ESP.restart();
 }
 
 void clearBondsAndEnterPairing() {
+  Serial.printf("[BLE] clear bonds and enter pairing on slot %d\n",
+                currentSlot + 1);
   stopBLE();
+  configureSlotStorageNamespace(currentSlot);
   NimBLEDevice::init("");
   NimBLEDevice::deleteAllBonds();
   NimBLEDevice::deinit(true);
   delay(200);
   appState = STATE_DISCONNECTED_PAIRING;
+  markLEDDirty();
   startBLE(currentSlot);
 }
 
 void enterDeepSleep() {
+  Serial.println("[SYS] entering deep sleep");
+  oled_ssd1306::Status s;
+  s.slot_1based = (uint8_t)(currentSlot + 1);
+  s.profile = slotProfiles[currentSlot].label;
+  s.state = "SLEEP";
+  s.eco = isEcoMode;
+  s.connected = isConnected;
+  oled_ssd1306::showSleep(s);
+  delay(50);
   stopBLE();
   pixels.clear();
   pixels.show();
@@ -375,7 +710,7 @@ void processHID(hid_event_t *evt) {
     // We disabled updateConnParams here to fix Error 2 spam.
     // The OS handles wakeup latency automatically.
     isEcoMode = false;
-    updateLED();
+    markLEDDirty();
   }
 
   // --- STANDARD KEYBOARD (ID 1) ---
@@ -388,14 +723,9 @@ void processHID(hid_event_t *evt) {
     for (int i = 2; i < 8; i++) {
       if (evt->rawData[i] == KEY_INSERT)
         isInsert = true;
-      if (evt->rawData[i] == KEY_1)
-        numKey = 0;
-      if (evt->rawData[i] == KEY_2)
-        numKey = 1;
-      if (evt->rawData[i] == KEY_3)
-        numKey = 2;
-      if (evt->rawData[i] == KEY_4)
-        numKey = 3;
+      int shortcutSlot = decodeSlotShortcut(evt->rawData[i]);
+      if (shortcutSlot != -1)
+        numKey = shortcutSlot;
       if (evt->rawData[i] == KEY_0)
         numKey = 99;
     }
@@ -417,6 +747,10 @@ void processHID(hid_event_t *evt) {
     if (appState == STATE_CONNECTED && pInputChar) {
       pInputChar->setValue(evt->rawData, 8);
       pInputChar->notify();
+      if (pBootInputChar) {
+        pBootInputChar->setValue(evt->rawData, 8);
+        pBootInputChar->notify();
+      }
     }
   }
 
@@ -443,7 +777,7 @@ void checkPowerManagement() {
   if (isConnected && !isEcoMode && (now - lastKeyTime > IDLE_TIME_ECO_MS)) {
     // Disabled updateConnParams to fix Error 2 spam
     isEcoMode = true;
-    updateLED();
+    markLEDDirty();
   }
 }
 
@@ -507,15 +841,55 @@ void hid_host_task(void *arg) {
 
 void setup() {
   Serial.begin(115200);
+  delay(200);
   pixels.begin();
   pixels.setBrightness(LED_BRIGHTNESS);
   pinMode(BOOT_BUTTON_PIN, INPUT_PULLUP);
+  initSlotStorage();
+
+  Serial.printf("[SYS] boot reset_reason=%s(%d) wakeup=%d stored_slot=%d\n",
+                resetReasonName(esp_reset_reason()), esp_reset_reason(),
+                esp_sleep_get_wakeup_cause(), storedSlot + 1);
 
   if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT0) {
     currentSlot = storedSlot;
   }
 
   esp_read_mac(baseMac, ESP_MAC_WIFI_STA);
+  Serial.printf(
+      "[SYS] base_mac=%02X:%02X:%02X:%02X:%02X:%02X current_slot=%d\n",
+      baseMac[0], baseMac[1], baseMac[2], baseMac[3], baseMac[4], baseMac[5],
+      currentSlot + 1);
+  logSlotProfiles();
+
+  bool oledOk = oled_ssd1306::begin(OLED_SDA_PIN, OLED_SCL_PIN,
+                                    0); // auto-detect 0x3C/0x3D
+  if (oledOk) {
+    Serial.printf("[OLED] ok addr=0x%02X SDA=%d SCL=%d\n",
+                  oled_ssd1306::address(), (int)OLED_SDA_PIN,
+                  (int)OLED_SCL_PIN);
+    oled_ssd1306::setBaseMac(baseMac);
+    oled_ssd1306::Status s;
+    s.slot_1based = (uint8_t)(currentSlot + 1);
+    s.profile = slotProfiles[currentSlot].label;
+    s.state = appStateName((ConnectionState)appState);
+    s.eco = isEcoMode;
+    s.connected = isConnected;
+    oled_ssd1306::showStatus(s);
+  } else {
+    Serial.printf(
+        "[OLED] init failed (no I2C ACK at 0x3C/0x3D on SDA=%d SCL=%d)\n",
+        (int)OLED_SDA_PIN, (int)OLED_SCL_PIN);
+  }
+
+  // Boot-time visual hint (works even if Serial monitor is not connected):
+  // green = OLED acknowledged on I2C, red = no OLED found on I2C.
+  pixels.setPixelColor(0, oledOk ? pixels.Color(0, 40, 0, 0)
+                                 : pixels.Color(40, 0, 0, 0));
+  pixels.show();
+  delay(2600);
+  pixels.setPixelColor(0, 0);
+  pixels.show();
 
   hidQueue = xQueueCreate(20, sizeof(hid_event_t));
   xTaskCreate(hid_host_task, "hid_task", 4096, NULL, 2, NULL);
@@ -536,16 +910,30 @@ void loop() {
   checkPowerManagement();
 
   static unsigned long lastUpdate = 0;
+  static unsigned long lastOledUpdate = 0;
   unsigned long now = millis();
 
+  if (now - lastOledUpdate > 250) {
+    lastOledUpdate = now;
+    oled_ssd1306::Status s;
+    s.slot_1based = (uint8_t)(currentSlot + 1);
+    s.profile = slotProfiles[currentSlot].label;
+    s.state = appStateName((ConnectionState)appState);
+    s.eco = isEcoMode;
+    s.connected = isConnected;
+    oled_ssd1306::showStatus(s);
+  }
+
   if (appState == STATE_CONNECTED) {
+    if (ledDirty)
+      updateLED();
     if (now - lastUpdate > 1000)
       lastUpdate = now;
   } else if (appState == STATE_DISCONNECTED_PAIRING) {
     int b = (now % 2000) > 1000 ? 2000 - (now % 2000) : (now % 2000);
     b = map(b, 0, 1000, 0, 255);
 
-    uint32_t hex = slotColors[currentSlot];
+    uint32_t hex = slotProfiles[currentSlot].color;
     uint8_t r = ((hex >> 16) & 0xFF) * b / 255;
     uint8_t g = ((hex >> 8) & 0xFF) * b / 255;
     uint8_t b_val = (hex & 0xFF) * b / 255;
@@ -557,7 +945,7 @@ void loop() {
     bool on = (cycle < 100) || (cycle > 200 && cycle < 300) ||
               (cycle > 400 && cycle < 500);
     if (on) {
-      uint32_t hex = slotColors[currentSlot];
+      uint32_t hex = slotProfiles[currentSlot].color;
       uint8_t r = (hex >> 16) & 0xFF;
       uint8_t g = (hex >> 8) & 0xFF;
       uint8_t b_val = hex & 0xFF;
