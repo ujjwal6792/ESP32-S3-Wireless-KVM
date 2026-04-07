@@ -2,3 +2,4 @@
 .vscode/
 .aider*
 .pio_core/
+.cache/

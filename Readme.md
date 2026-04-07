@@ -137,6 +137,16 @@ Main config lives in `src/main.cpp`:
 2. Connect ESP32-S3 via USB.
 3. Run PlatformIO Upload.
 
+## Neovim / clangd
+
+To generate `compile_commands.json` for `clangd`, run:
+
+```bash
+bash scripts/gen_compdb.sh
+```
+
+This uses PlatformIO's `compiledb` target so Neovim can resolve Arduino and ESP32 headers correctly.
+
 ## Notes
 
 - On deep sleep, press the board **BOOT** button to wake.

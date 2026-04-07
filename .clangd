@@ -1,0 +1,11 @@
+CompileFlags:
+  CompilationDatabase: .
+  Compiler: /Users/ace/.platformio/packages/toolchain-xtensa-esp32s3/bin/xtensa-esp32s3-elf-g++
+  Remove:
+    - -mlongcalls
+    - -fstrict-volatile-bitfields
+    - -fno-tree-switch-conversion
+    - -mtext-section-literals
+
+Diagnostics:
+  UnusedIncludes: None
