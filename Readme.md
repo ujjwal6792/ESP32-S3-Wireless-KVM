@@ -5,6 +5,22 @@ plug in a wired USB keyboard, then switch it between 4 BLE slots using hotkeys.
 
 ## Latest Changes
 
+- Moved TFT runtime code into a dedicated module: `src/tft_display.*`
+- Switched the working TFT runtime path to `ST7789`
+- Added a Fallout-style TFT status screen
+- Rotated the OLED UI vertically so the original top edge is on the left
+- Added documentation in `docs/` explaining the display flow and C++ file structure
+- Added default ESP32-S3 TFT pin mapping:
+  - `CS=GPIO10`
+  - `DC=GPIO14`
+  - `RST=GPIO15`
+  - `SCK=GPIO12`
+  - `MOSI=GPIO11`
+  - `MISO=GPIO13`
+  - `LED/BL=GPIO21`
+- Aligned the default OLED I2C pins with the handheld wiring plan:
+  - `SDA=GPIO8`
+  - `SCL=GPIO18`
 - LED type updated to **SK6812 GRBW** (`NEO_GRBW`) with explicit white-channel control.
 - Slot colors updated to custom Catppuccin-style colors:
   - Slot 1: `0x04A5E5` (Blue)
@@ -44,6 +60,30 @@ plug in a wired USB keyboard, then switch it between 4 BLE slots using hotkeys.
 3. Wired USB keyboard.
 4. Power source (USB/battery).
 5. 1x addressable LED on GPIO48 (current code targets SK6812 GRBW).
+6. Optional OLED on I2C: `SDA=GPIO8`, `SCL=GPIO18`.
+7. Optional 2.8in 320x240 SPI TFT:
+   - `VCC -> 3.3V`
+   - `GND -> GND`
+   - `LED -> GPIO21`
+   - `CS -> GPIO10`
+   - `RESET -> GPIO15`
+   - `DC/RS -> GPIO14`
+   - `SCK -> GPIO12`
+   - `SDI/MOSI -> GPIO11`
+   - `SDO/MISO -> GPIO13`
+
+## TFT Demo
+
+- On boot, the TFT shows a themed startup screen.
+- After boot, it switches to a live Fallout-style status screen showing slot, profile, BLE state, eco mode, and link status.
+- The current runtime code targets the working `ST7789` driver path.
+- Touch pins are intentionally unused.
+
+## Docs
+
+- `docs/CPP_BASICS.md`
+- `docs/DISPLAY_ARCHITECTURE.md`
+- `docs/HARDWARE_PINS.md`
 
 ## LED Behavior
 

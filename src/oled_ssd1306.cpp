@@ -9,7 +9,10 @@ namespace {
 
 constexpr int kWidth = 128;
 constexpr int kHeight = 64;
-constexpr int kHeaderHeight = 16; // yellow band on common 0.96" bicolor modules
+constexpr int kSidebarWidth = 16;
+constexpr int kTopMargin = 5;
+constexpr int kBodyX = kSidebarWidth + 4;
+constexpr int kBodyWidth = 34;
 
 Adafruit_SSD1306 g_display(kWidth, kHeight, &Wire, -1);
 bool g_ready = false;
@@ -48,68 +51,57 @@ void strCopyTrunc(char *dst, size_t dstSize, const char *src) {
 }
 
 void drawHeader(const Status &s) {
-  g_display.fillRect(0, 0, kWidth, kHeaderHeight, SSD1306_BLACK);
+  int displayHeight = g_display.height();
+  g_display.fillRect(0, 0, kSidebarWidth, displayHeight, SSD1306_BLACK);
+
+  g_display.drawFastVLine(kSidebarWidth, 0, displayHeight, SSD1306_WHITE);
+
+  // Active tab: Bluetooth.
+  g_display.drawRoundRect(1, kTopMargin, 13, 18, 3, SSD1306_WHITE);
+  g_display.fillRoundRect(2, kTopMargin + 1, 11, 16, 3, SSD1306_WHITE);
   g_display.setTextSize(1);
-  g_display.setTextColor(SSD1306_WHITE);
-  g_display.setCursor(0, 0);
-
-  // Keep header short so it fits the 16px band.
-  g_display.print("S");
-  g_display.print((int)s.slot_1based);
-  g_display.print(" ");
-  if (s.profile && s.profile[0] != '\0') {
-    g_display.print(s.profile);
-  } else {
-    g_display.print("Profile");
-  }
-
-  // Right-side indicator: C / P / R
-  const char *indicator = "R";
-  if (s.connected) {
-    indicator = "C";
-  } else if (s.state && (strstr(s.state, "pair") || strstr(s.state, "PAIR"))) {
-    indicator = "P";
-  }
-
-  int16_t x1, y1;
-  uint16_t w, h;
-  g_display.getTextBounds(indicator, 0, 0, &x1, &y1, &w, &h);
-  g_display.setCursor(kWidth - (int)w - 2, 0);
-  g_display.print(indicator);
-
-  g_display.drawFastHLine(0, kHeaderHeight, kWidth, SSD1306_WHITE);
+  g_display.setTextColor(SSD1306_BLACK);
+  g_display.setCursor(4, kTopMargin + 6);
+  g_display.print("B");
 }
 
 void drawBody(const Status &s) {
-  g_display.fillRect(0, kHeaderHeight + 1, kWidth, kHeight - kHeaderHeight - 1,
-                     SSD1306_BLACK);
+  int h = g_display.height();
+  g_display.fillRect(kSidebarWidth + 2, 0, kBodyWidth, h, SSD1306_BLACK);
   g_display.setTextSize(1);
   g_display.setTextColor(SSD1306_WHITE);
+  g_display.setTextWrap(false);
 
-  // Line 1: state
-  g_display.setCursor(0, kHeaderHeight + 4);
-  if (s.state && s.state[0] != '\0') {
-    g_display.print(s.state);
+  g_display.setCursor(kBodyX, kTopMargin + 1);
+  g_display.print("stat");
+  g_display.setCursor(kBodyX, kTopMargin + 13);
+  g_display.print("con:");
+  g_display.print(s.connected ? "y" : "n");
+
+  g_display.setCursor(kBodyX, kTopMargin + 33);
+  g_display.print("slot");
+
+  g_display.setCursor(kBodyX, kTopMargin + 47);
+  if (s.profile && s.profile[0] != '\0') {
+    if (strcmp(s.profile, "Mac") == 0) {
+      g_display.print("mac");
+    } else if (strcmp(s.profile, "Windows") == 0) {
+      g_display.print("win");
+    } else if (strcmp(s.profile, "Linux") == 0) {
+      g_display.print("linux");
+    } else if (strcmp(s.profile, "Android") == 0) {
+      g_display.print("phone");
+    } else {
+      char profileBuf[6];
+      strCopyTrunc(profileBuf, sizeof(profileBuf), s.profile);
+      g_display.print(profileBuf);
+    }
   } else {
-    g_display.print("...");
+    g_display.print("unk");
   }
 
-  // Line 2: eco/normal
-  g_display.setCursor(0, kHeaderHeight + 16);
-  g_display.print(s.eco ? "ECO" : "ACTIVE");
-  g_display.print("  ");
-  g_display.print(s.connected ? "LINK" : "ADV");
-
-  // Footer: MAC tail
-  g_display.setCursor(0, kHeight - 8);
-  if (g_has_mac) {
-    char buf[16];
-    snprintf(buf, sizeof(buf), "MAC ..:%02X:%02X:%02X", g_mac_tail[0],
-             g_mac_tail[1], g_mac_tail[2]);
-    g_display.print(buf);
-  } else {
-    g_display.print("MAC ..:..:..:..");
-  }
+  g_display.setCursor(kBodyX, h - 10);
+  g_display.print("     ");
 }
 
 void renderStatus(const Status &s) {
@@ -191,6 +183,8 @@ bool begin(uint8_t sdaPin, uint8_t sclPin, uint8_t i2cAddr) {
 
   g_display.clearDisplay();
   g_display.invertDisplay(false);
+  // Rotate clockwise so the physical yellow strip sits on the left sidebar.
+  g_display.setRotation(1);
   g_display.setTextSize(1);
   g_display.setTextColor(SSD1306_WHITE);
   g_display.setCursor(0, 0);
@@ -230,7 +224,7 @@ void showSleep(const Status &s) {
   drawHeader(s);
   g_display.setTextSize(1);
   g_display.setTextColor(SSD1306_WHITE);
-  g_display.setCursor(0, kHeaderHeight + 10);
+  g_display.setCursor(kSidebarWidth + 4, 24);
   g_display.print("Sleeping...");
   g_display.display();
   g_lastDrawMs = millis();

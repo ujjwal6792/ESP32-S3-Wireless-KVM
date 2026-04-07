@@ -13,8 +13,9 @@ struct Status {
 };
 
 // SSD1306 128x64 over I2C.
-// Default pins match your wiring: SDA=GPIO8, SCL=GPIO9.
-bool begin(uint8_t sdaPin = 8, uint8_t sclPin = 9, uint8_t i2cAddr = 0x3C);
+// Default pins match your wiring: SDA=GPIO8, SCL=GPIO18.
+// The implementation rotates the panel vertically at runtime.
+bool begin(uint8_t sdaPin = 8, uint8_t sclPin = 18, uint8_t i2cAddr = 0x3C);
 
 // Returns the detected/used I2C address (0 if not initialized).
 uint8_t address();

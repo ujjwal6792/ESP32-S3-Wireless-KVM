@@ -8,6 +8,7 @@
 #include <freertos/task.h>
 
 #include "oled_ssd1306.h"
+#include "tft_display.h"
 
 // --- BLE Dependencies ---
 #include <NimBLEDevice.h>
@@ -31,12 +32,37 @@
 
 // OLED SSD1306 (I2C)
 // Override at build time via platformio.ini build_flags:
-// -DOLED_SDA_PIN=4 -DOLED_SCL_PIN=5
+// -DOLED_SDA_PIN=8 -DOLED_SCL_PIN=18
 #ifndef OLED_SDA_PIN
-#define OLED_SDA_PIN 18
+#define OLED_SDA_PIN 8
 #endif
 #ifndef OLED_SCL_PIN
-#define OLED_SCL_PIN 10
+#define OLED_SCL_PIN 18
+#endif
+
+// TFT 320x240 SPI
+// Current runtime driver is ST7789 using the working wiring:
+// CS=10, DC=14, RST=15, SCK=12, MOSI=11, MISO=13, BL=21.
+#ifndef TFT_CS_PIN
+#define TFT_CS_PIN 10
+#endif
+#ifndef TFT_DC_PIN
+#define TFT_DC_PIN 14
+#endif
+#ifndef TFT_RST_PIN
+#define TFT_RST_PIN 15
+#endif
+#ifndef TFT_SCK_PIN
+#define TFT_SCK_PIN 12
+#endif
+#ifndef TFT_MOSI_PIN
+#define TFT_MOSI_PIN 11
+#endif
+#ifndef TFT_MISO_PIN
+#define TFT_MISO_PIN 13
+#endif
+#ifndef TFT_BL_PIN
+#define TFT_BL_PIN 21
 #endif
 
 // POWER SAVING
@@ -45,7 +71,7 @@
 
 // Button controls
 #define BOOT_BUTTON_PIN 0
-#define BOOT_SHORT_PRESS_MS 60                                                                                                                                                                                                                                                                                                                                                                                                                                                ````````````````````````````````````````````````````` 
+#define BOOT_SHORT_PRESS_MS 60
 #define BOOT_LONG_PRESS_MS 1500
 
 // Key Codes
@@ -696,6 +722,13 @@ void enterDeepSleep() {
   s.eco = isEcoMode;
   s.connected = isConnected;
   oled_ssd1306::showSleep(s);
+  tft_display::Status ts;
+  ts.slot_1based = s.slot_1based;
+  ts.profile = s.profile;
+  ts.state = s.state;
+  ts.eco = s.eco;
+  ts.connected = s.connected;
+  tft_display::showSleep(ts);
   delay(50);
   stopBLE();
   pixels.clear();
@@ -882,6 +915,30 @@ void setup() {
         (int)OLED_SDA_PIN, (int)OLED_SCL_PIN);
   }
 
+  tft_display::Pins tftPins = {
+      .cs = TFT_CS_PIN,
+      .dc = TFT_DC_PIN,
+      .rst = TFT_RST_PIN,
+      .sck = TFT_SCK_PIN,
+      .mosi = TFT_MOSI_PIN,
+      .miso = TFT_MISO_PIN,
+      .backlight = TFT_BL_PIN,
+  };
+  bool tftOk = tft_display::begin(tftPins);
+  if (tftOk) {
+    Serial.printf(
+        "[TFT] ok CS=%d DC=%d RST=%d SCK=%d MOSI=%d MISO=%d BL=%d 320x240\n",
+        (int)TFT_CS_PIN, (int)TFT_DC_PIN, (int)TFT_RST_PIN, (int)TFT_SCK_PIN,
+        (int)TFT_MOSI_PIN, (int)TFT_MISO_PIN, (int)TFT_BL_PIN);
+    tft_display::showBootScreen();
+  } else {
+    Serial.printf("[TFT] init failed on CS=%d DC=%d RST=%d SCK=%d MOSI=%d "
+                  "MISO=%d BL=%d\n",
+                  (int)TFT_CS_PIN, (int)TFT_DC_PIN, (int)TFT_RST_PIN,
+                  (int)TFT_SCK_PIN, (int)TFT_MOSI_PIN, (int)TFT_MISO_PIN,
+                  (int)TFT_BL_PIN);
+  }
+
   // Boot-time visual hint (works even if Serial monitor is not connected):
   // green = OLED acknowledged on I2C, red = no OLED found on I2C.
   pixels.setPixelColor(0, oledOk ? pixels.Color(0, 40, 0, 0)
@@ -922,6 +979,14 @@ void loop() {
     s.eco = isEcoMode;
     s.connected = isConnected;
     oled_ssd1306::showStatus(s);
+
+    tft_display::Status ts;
+    ts.slot_1based = s.slot_1based;
+    ts.profile = s.profile;
+    ts.state = s.state;
+    ts.eco = s.eco;
+    ts.connected = s.connected;
+    tft_display::showStatus(ts);
   }
 
   if (appState == STATE_CONNECTED) {
